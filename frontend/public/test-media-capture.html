@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MediaStream Capture Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #007bff;
+      padding-bottom: 10px;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 5px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .status {
+      margin: 20px 0;
+      padding: 15px;
+      border-radius: 4px;
+      background: #e7f3ff;
+      border-left: 4px solid #007bff;
+    }
+    .error {
+      background: #ffe7e7;
+      border-left-color: #dc3545;
+    }
+    .success {
+      background: #e7ffe7;
+      border-left-color: #28a745;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 15px;
+      margin: 20px 0;
+    }
+    .stat-box {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 4px;
+      border: 1px solid #dee2e6;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #6c757d;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #333;
+    }
+    #videoPreview {
+      width: 100%;
+      max-width: 640px;
+      border-radius: 4px;
+      margin: 20px 0;
+      display: none;
+    }
+    .log {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      padding: 15px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      margin-top: 20px;
+    }
+    .log-entry {
+      margin: 5px 0;
+      padding: 5px;
+      border-left: 3px solid #007bff;
+      padding-left: 10px;
+    }
+    .log-entry.video {
+      border-left-color: #28a745;
+    }
+    .log-entry.audio {
+      border-left-color: #ffc107;
+    }
+    .log-entry.error {
+      border-left-color: #dc3545;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📹 MediaStream Capture Test</h1>
+    
+    <div id="status" class="status">
+      Click "Initialize" to request camera and microphone permissions.
+    </div>
+
+    <div>
+      <button id="initBtn" onclick="initialize()">Initialize</button>
+      <button id="startBtn" onclick="startCapture()" disabled>Start Capture</button>
+      <button id="stopBtn" onclick="stopCapture()" disabled>Stop Capture</button>
+      <button id="destroyBtn" onclick="destroy()" disabled>Destroy</button>
+    </div>
+
+    <video id="videoPreview" autoplay muted></video>
+
+    <div class="stats">
+      <div class="stat-box">
+        <div class="stat-label">Video Frames</div>
+        <div class="stat-value" id="videoCount">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Audio Chunks</div>
+        <div class="stat-value" id="audioCount">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Video FPS</div>
+        <div class="stat-value" id="fps">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Avg Frame Size</div>
+        <div class="stat-value" id="avgSize">0 KB</div>
+      </div>
+    </div>
+
+    <div class="log" id="log">
+      <div class="log-entry">Log output will appear here...</div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Inline MediaStreamCapture implementation for testing
+    class MediaStreamCapture {
+      constructor(config = {}) {
+        this.config = {
+          video: { width: 640, height: 480, frameRate: 10, ...config.video },
+          audio: { sampleRate: 16000, channelCount: 1, ...config.audio }
+        };
+        this.videoStream = null;
+        this.audioStream = null;
+        this.videoElement = null;
+        this.canvas = null;
+        this.ctx = null;
+        this.audioContext = null;
+        this.audioWorkletNode = null;
+        this.frameIntervalId = null;
+        this.onFrameCallback = null;
+        this.isCapturing = false;
+      }
+
+      async initialize() {
+        try {
+          if (this.config.video) {
+            this.videoStream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: this.config.video.width },
+                height: { ideal: this.config.video.height },
+                frameRate: { ideal: this.config.video.frameRate }
+              }
+            });
+
+            this.videoElement = document.createElement('video');
+            this.videoElement.srcObject = this.videoStream;
+            this.videoElement.autoplay = true;
+            this.videoElement.muted = true;
+
+            await new Promise(resolve => this.videoElement.onloadedmetadata = resolve);
+
+            this.canvas = document.createElement('canvas');
+            this.canvas.width = this.config.video.width;
+            this.canvas.height = this.config.video.height;
+            this.ctx = this.canvas.getContext('2d');
+
+            // Show preview
+            const preview = document.getElementById('videoPreview');
+            preview.srcObject = this.videoStream;
+            preview.style.display = 'block';
+          }
+
+          if (this.config.audio) {
+            this.audioStream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                sampleRate: this.config.audio.sampleRate,
+                channelCount: this.config.audio.channelCount,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+              }
+            });
+
+            this.audioContext = new AudioContext({ sampleRate: this.config.audio.sampleRate });
+
+            await this.audioContext.audioWorklet.addModule('/audio-processor.worklet.js');
+
+            const source = this.audioContext.createMediaStreamSource(this.audioStream);
+            this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
+
+            this.audioWorkletNode.port.onmessage = (event) => {
+              if (event.data.type === 'audio-chunk') {
+                this.handleAudioChunk(event.data.samples);
+              }
+            };
+
+            source.connect(this.audioWorkletNode);
+            this.audioWorkletNode.connect(this.audioContext.destination);
+          }
+
+          console.log('✅ MediaStreamCapture initialized');
+          return true;
+        } catch (error) {
+          console.error('❌ Failed to initialize:', error);
+          throw error;
+        }
+      }
+
+      startCapture(onFrame) {
+        if (this.isCapturing) return;
+        this.onFrameCallback = onFrame;
+        this.isCapturing = true;
+
+        if (this.videoStream && this.videoElement && this.canvas && this.ctx) {
+          this.frameIntervalId = setInterval(() => this.captureVideoFrame(), 100);
+        }
+      }
+
+      stopCapture() {
+        if (!this.isCapturing) return;
+        this.isCapturing = false;
+        if (this.frameIntervalId) clearInterval(this.frameIntervalId);
+      }
+
+      destroy() {
+        this.stopCapture();
+        if (this.videoStream) this.videoStream.getTracks().forEach(t => t.stop());
+        if (this.audioStream) this.audioStream.getTracks().forEach(t => t.stop());
+        if (this.audioWorkletNode) this.audioWorkletNode.disconnect();
+        if (this.audioContext) this.audioContext.close();
+        document.getElementById('videoPreview').style.display = 'none';
+      }
+
+      captureVideoFrame() {
+        if (!this.videoElement || !this.canvas || !this.ctx || !this.onFrameCallback) return;
+        try {
+          this.ctx.drawImage(this.videoElement, 0, 0, this.canvas.width, this.canvas.height);
+          const base64 = this.canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+          this.onFrameCallback({
+            type: 'video',
+            data: base64,
+            timestamp: Date.now(),
+            metadata: { width: this.canvas.width, height: this.canvas.height }
+          });
+        } catch (error) {
+          console.error('Frame capture error:', error);
+        }
+      }
+
+      handleAudioChunk(samples) {
+        if (!this.onFrameCallback) return;
+        try {
+          const wavBase64 = this.encodeWAV(samples);
+          this.onFrameCallback({
+            type: 'audio',
+            data: wavBase64,
+            timestamp: Date.now(),
+            metadata: { sampleRate: this.config.audio.sampleRate, channels: this.config.audio.channelCount }
+          });
+        } catch (error) {
+          console.error('Audio chunk error:', error);
+        }
+      }
+
+      encodeWAV(samples) {
+        const sampleRate = this.config.audio.sampleRate;
+        const numChannels = this.config.audio.channelCount;
+        const int16Samples = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          const s = Math.max(-1, Math.min(1, samples[i]));
+          int16Samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        const dataLength = int16Samples.length * 2;
+        const buffer = new ArrayBuffer(44 + dataLength);
+        const view = new DataView(buffer);
+
+        const writeString = (offset, str) => {
+          for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+        };
+
+        let offset = 0;
+        writeString(offset, 'RIFF'); offset += 4;
+        view.setUint32(offset, 36 + dataLength, true); offset += 4;
+        writeString(offset, 'WAVE'); offset += 4;
+        writeString(offset, 'fmt '); offset += 4;
+        view.setUint32(offset, 16, true); offset += 4;
+        view.setUint16(offset, 1, true); offset += 2;
+        view.setUint16(offset, numChannels, true); offset += 2;
+        view.setUint32(offset, sampleRate, true); offset += 4;
+        view.setUint32(offset, sampleRate * numChannels * 2, true); offset += 4;
+        view.setUint16(offset, numChannels * 2, true); offset += 2;
+        view.setUint16(offset, 16, true); offset += 2;
+        writeString(offset, 'data'); offset += 4;
+        view.setUint32(offset, dataLength, true); offset += 4;
+
+        for (let i = 0; i < int16Samples.length; i++) {
+          view.setInt16(offset, int16Samples[i], true);
+          offset += 2;
+        }
+
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+      }
+
+      static isSupported() {
+        return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+                  window.AudioContext && 'audioWorklet' in AudioContext.prototype);
+      }
+    }
+
+    // Global state
+    window.capture = null;
+    window.stats = {
+      videoCount: 0,
+      audioCount: 0,
+      totalVideoSize: 0,
+      lastVideoTime: Date.now(),
+      fps: 0
+    };
+
+    function logMessage(msg, type = 'info') {
+      const log = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setStatus(msg, type = '') {
+      const status = document.getElementById('status');
+      status.textContent = msg;
+      status.className = `status ${type}`;
+    }
+
+    window.initialize = async function() {
+      try {
+        if (!MediaStreamCapture.isSupported()) {
+          setStatus('❌ Browser does not support required APIs', 'error');
+          logMessage('Browser not supported', 'error');
+          return;
+        }
+
+        setStatus('🔄 Requesting permissions...', '');
+        logMessage('Initializing MediaStreamCapture...');
+
+        window.capture = new MediaStreamCapture();
+        await window.capture.initialize();
+
+        setStatus('✅ Initialized! Camera and microphone permissions granted.', 'success');
+        logMessage('✅ Permissions granted', 'info');
+        
+        document.getElementById('initBtn').disabled = true;
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('destroyBtn').disabled = false;
+      } catch (error) {
+        setStatus(`❌ Error: ${error.message}`, 'error');
+        logMessage(`Error: ${error.message}`, 'error');
+      }
+    };
+
+    window.startCapture = function() {
+      if (!window.capture) return;
+
+      window.capture.startCapture((frame) => {
+        if (frame.type === 'video') {
+          window.stats.videoCount++;
+          window.stats.totalVideoSize += frame.data.length;
+          
+          const now = Date.now();
+          const elapsed = (now - window.stats.lastVideoTime) / 1000;
+          if (elapsed >= 1) {
+            window.stats.fps = Math.round(window.stats.videoCount / elapsed);
+            window.stats.videoCount = 0;
+            window.stats.lastVideoTime = now;
+          }
+
+          document.getElementById('videoCount').textContent = window.stats.videoCount;
+          document.getElementById('fps').textContent = window.stats.fps;
+          document.getElementById('avgSize').textContent = 
+            (window.stats.totalVideoSize / window.stats.videoCount / 1024).toFixed(1) + ' KB';
+
+          if (window.stats.videoCount % 10 === 0) {
+            logMessage(`Video frame captured (${(frame.data.length/1024).toFixed(1)} KB)`, 'video');
+          }
+        } else if (frame.type === 'audio') {
+          window.stats.audioCount++;
+          document.getElementById('audioCount').textContent = window.stats.audioCount;
+          
+          if (window.stats.audioCount % 5 === 0) {
+            logMessage(`Audio chunk captured (${(frame.data.length/1024).toFixed(1)} KB)`, 'audio');
+          }
+        }
+      });
+
+      setStatus('🔴 Capturing...', 'success');
+      logMessage('Capture started');
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+    };
+
+    window.stopCapture = function() {
+      if (!window.capture) return;
+      window.capture.stopCapture();
+      setStatus('⏸️ Capture stopped', '');
+      logMessage('Capture stopped');
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    };
+
+    window.destroy = function() {
+      if (!window.capture) return;
+      window.capture.destroy();
+      window.capture = null;
+      setStatus('🔄 Ready to initialize', '');
+      logMessage('MediaStreamCapture destroyed');
+      document.getElementById('initBtn').disabled = false;
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = true;
+      document.getElementById('destroyBtn').disabled = true;
+      window.stats = { videoCount: 0, audioCount: 0, totalVideoSize: 0, lastVideoTime: Date.now(), fps: 0 };
+    };
+  </script>
+</body>
+</html>

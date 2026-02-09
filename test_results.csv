@@ -1,0 +1,2 @@
+participant_id,age_range,vision_status,task_1_completion,task_1_time_sec,task_1_collisions,task_2_completion,task_2_time_sec,task_2_collisions,sus_score,nps_score,confidence_before,confidence_after,qualitative_feedback,testing_date
+sample-001,25-34,low-vision,True,45.0,0,True,60.0,1,78,8,4,7,Helpful but directions sometimes vague.,2026-02-08T19:37:48.304253
