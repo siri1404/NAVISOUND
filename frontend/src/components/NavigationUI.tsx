@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SpatialAudioEngine } from '../services/SpatialAudioEngine';
 import { WebSocketClient } from '../services/WebSocketClient';
+import { SensorCapture, SensorData } from '../services/SensorCapture';
 import { SpatialAudioVisualizer } from './SpatialAudioVisualizer';
 
 /* ------------------------------------------------------------------ */
@@ -12,6 +13,18 @@ interface Hazard {
 	urgency: string;
 	direction?: string;
 	distance_feet?: number;
+	bounding_box?: BBox;
+}
+
+interface BBox {
+	ymin: number; xmin: number; ymax: number; xmax: number;
+}
+
+interface DetectionOverlay {
+	label: string;
+	box: BBox;
+	color: string;          // CSS colour
+	urgency?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -39,6 +52,7 @@ export const NavigationUI: React.FC = () => {
 	/* ---- refs (stable across renders, used in callbacks) ---- */
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
+	const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 	const wsRef = useRef<WebSocketClient | null>(null);
 	const audioRef = useRef<SpatialAudioEngine | null>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -49,6 +63,9 @@ export const NavigationUI: React.FC = () => {
 	const audioEnabledRef = useRef(false);
 	const voiceActiveRef = useRef(false);
 	const recognitionRef = useRef<any>(null);
+
+	const sensorRef = useRef<SensorCapture | null>(null);
+	const sensorDataRef = useRef<SensorData | null>(null);
 
 	const lastSpokeRef = useRef(0);
 	const lastSpokenTextRef = useRef('');
@@ -100,6 +117,9 @@ export const NavigationUI: React.FC = () => {
 		if (conf > 0) setConfidence(conf);
 		if (sum) setSummary(sum);
 		if (feats.length > 0) setFeatures(feats);
+
+		// Draw bounding-box overlays on camera feed
+		drawDetections(data);
 
 		/* ---- SMART AUDIO FEEDBACK ---- */
 		if (audioEnabledRef.current && audioRef.current) {
@@ -168,6 +188,29 @@ export const NavigationUI: React.FC = () => {
 			}
 		}
 
+		// Play native Gemini-generated audio if present (bypasses browser TTS)
+		if (data.native_audio_b64) {
+			try {
+				const audioCtx = new AudioContext({ sampleRate: 24000 });
+				const raw = Uint8Array.from(atob(data.native_audio_b64), (c) => c.charCodeAt(0));
+				// Gemini outputs 24kHz 16-bit mono PCM
+				const float32 = new Float32Array(raw.length / 2);
+				const view = new DataView(raw.buffer);
+				for (let i = 0; i < float32.length; i++) {
+					float32[i] = view.getInt16(i * 2, true) / 32768;
+				}
+				const buf = audioCtx.createBuffer(1, float32.length, 24000);
+				buf.getChannelData(0).set(float32);
+				const src = audioCtx.createBufferSource();
+				src.buffer = buf;
+				src.connect(audioCtx.destination);
+				src.start();
+				console.log('[NaviSound] Playing native Gemini audio:', float32.length, 'samples');
+			} catch (e) {
+				console.warn('[NaviSound] Native audio playback error:', e);
+			}
+		}
+
 		// Continue capture loop
 		if (streamingRef.current) {
 			setTimeout(captureAndSend, 500);
@@ -198,6 +241,101 @@ export const NavigationUI: React.FC = () => {
 	}
 
 	/* -------------------------------------------------------------- */
+	/*  Bounding-box overlay rendering                                 */
+	/* -------------------------------------------------------------- */
+	function drawDetections(data: any): void {
+		const overlay = overlayCanvasRef.current;
+		const video = videoRef.current;
+		if (!overlay || !video) return;
+
+		// Match overlay size to video display size
+		const rect = video.getBoundingClientRect();
+		overlay.width = rect.width;
+		overlay.height = rect.height;
+
+		const ctx = overlay.getContext('2d');
+		if (!ctx) return;
+		ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+		const detections: DetectionOverlay[] = [];
+
+		// Collect bounding boxes from hazards
+		const hazardsRaw: any[] = data.hazards || [];
+		for (const h of hazardsRaw) {
+			if (h.bounding_box) {
+				const urgency = h.urgency || 'medium';
+				detections.push({
+					label: h.type || 'hazard',
+					box: h.bounding_box,
+					urgency,
+					color: urgency === 'high' || urgency === 'CRITICAL' || urgency === 'WARNING'
+						? '#ef4444' : urgency === 'medium' ? '#f59e0b' : '#22c55e',
+				});
+			}
+		}
+
+		// Collect from spatial_features
+		const spatial: any[] = data.spatial_features || [];
+		for (const f of spatial) {
+			const bb = typeof f === 'object' ? f.bounding_box : null;
+			if (bb) {
+				detections.push({
+					label: f.label || f.name || 'feature',
+					box: bb,
+					color: '#3b82f6',
+				});
+			}
+		}
+
+		// Draw each detection
+		const w = overlay.width;
+		const h = overlay.height;
+
+		for (const det of detections) {
+			// Gemini normalises to 0-1000 range
+			const x1 = (det.box.xmin / 1000) * w;
+			const y1 = (det.box.ymin / 1000) * h;
+			const x2 = (det.box.xmax / 1000) * w;
+			const y2 = (det.box.ymax / 1000) * h;
+			const bw = x2 - x1;
+			const bh = y2 - y1;
+
+			// Box outline
+			ctx.strokeStyle = det.color;
+			ctx.lineWidth = 2;
+			ctx.strokeRect(x1, y1, bw, bh);
+
+			// Semi-transparent fill
+			ctx.fillStyle = det.color + '18'; // ~10% opacity
+			ctx.fillRect(x1, y1, bw, bh);
+
+			// Label background
+			const label = `${det.label}${det.urgency ? ' (' + det.urgency + ')' : ''}`;
+			ctx.font = 'bold 12px Manrope, sans-serif';
+			const metrics = ctx.measureText(label);
+			const labelH = 18;
+			const labelY = y1 > labelH + 4 ? y1 - labelH - 2 : y1 + 2;
+			ctx.fillStyle = det.color + 'cc'; // ~80% opacity
+			ctx.fillRect(x1, labelY, metrics.width + 8, labelH);
+
+			// Label text
+			ctx.fillStyle = '#ffffff';
+			ctx.fillText(label, x1 + 4, labelY + 13);
+		}
+
+		// Detection count badge in top-right
+		if (detections.length > 0) {
+			const badge = `${detections.length} detection${detections.length > 1 ? 's' : ''}`;
+			ctx.font = 'bold 11px Manrope, sans-serif';
+			const bm = ctx.measureText(badge);
+			ctx.fillStyle = 'rgba(0,0,0,0.75)';
+			ctx.fillRect(w - bm.width - 16, 8, bm.width + 12, 20);
+			ctx.fillStyle = '#3b82f6';
+			ctx.fillText(badge, w - bm.width - 10, 22);
+		}
+	}
+
+	/* -------------------------------------------------------------- */
 	/*  Frame capture → send                                           */
 	/* -------------------------------------------------------------- */
 	function captureAndSend() {
@@ -221,11 +359,29 @@ export const NavigationUI: React.FC = () => {
 		sendTimeRef.current = Date.now();
 		setFramesSent((p) => p + 1);
 
-		client.send({
+		const payload: any = {
 			type: 'video_frame',
 			data: b64,
 			timestamp: Date.now() / 1000,
-		});
+		};
+
+		// Attach live sensor readings (GPS, compass, accelerometer)
+		if (sensorDataRef.current) {
+			payload.sensor_data = {
+				lat: sensorDataRef.current.lat,
+				lon: sensorDataRef.current.lon,
+				accuracy: sensorDataRef.current.accuracy,
+				heading: sensorDataRef.current.heading,
+				speed: sensorDataRef.current.speed,
+				pitch: sensorDataRef.current.pitch,
+				roll: sensorDataRef.current.roll,
+				accelX: sensorDataRef.current.accelX,
+				accelY: sensorDataRef.current.accelY,
+				accelZ: sensorDataRef.current.accelZ,
+			};
+		}
+
+		client.send(payload);
 	}
 
 	/* -------------------------------------------------------------- */
@@ -244,6 +400,14 @@ export const NavigationUI: React.FC = () => {
 			if (videoRef.current) videoRef.current.srcObject = stream;
 			setCameraActive(true);
 			streamingRef.current = true;
+
+			// Start sensor capture (GPS + compass + accelerometer)
+			if (!sensorRef.current) {
+				sensorRef.current = new SensorCapture();
+			}
+			sensorRef.current.start().catch(() => {});
+			sensorRef.current.onUpdate((data) => { sensorDataRef.current = data; });
+
 			setTimeout(captureAndSend, 800); // allow stream to stabilise
 		} catch (err) {
 			console.error('Camera access denied:', err);
@@ -257,6 +421,7 @@ export const NavigationUI: React.FC = () => {
 		mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
 		mediaStreamRef.current = null;
 		if (videoRef.current) videoRef.current.srcObject = null;
+		sensorRef.current?.stop();
 		setCameraActive(false);
 	}
 
@@ -293,11 +458,22 @@ export const NavigationUI: React.FC = () => {
 				const text = last[0].transcript.trim();
 				if (text && wsRef.current?.isConnected) {
 					setSummary(`You said: "${text}"`);
-					wsRef.current.send({
-						type: 'text_query',
-						destination: text,
-						timestamp: Date.now() / 1000,
-					});
+					// Use voice_command type so orchestrator can detect
+					// "where" queries for spatial memory recall
+					const lc = text.toLowerCase();
+					if (lc.includes('where') || lc.includes('recall') || lc.includes('remember')) {
+						wsRef.current.send({
+							type: 'voice_command',
+							text: text,
+							timestamp: Date.now() / 1000,
+						});
+					} else {
+						wsRef.current.send({
+							type: 'text_query',
+							destination: text,
+							timestamp: Date.now() / 1000,
+						});
+					}
 				}
 			}
 		};
@@ -441,31 +617,38 @@ export const NavigationUI: React.FC = () => {
 			role="main"
 			aria-label="NaviSound Navigation Interface"
 			style={{
-				background: '#0a0a12', color: '#f1f5f9',
-				fontFamily: "'Inter','Segoe UI',Arial,sans-serif",
+				background: '#0a0a0a', color: '#e0e0e0',
+				fontFamily: "'Manrope','Segoe UI',Arial,sans-serif",
 				minHeight: '100vh', display: 'flex', flexDirection: 'column',
 			}}
 		>
+			<style>{`
+				@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Manrope:wght@300;400;500;600&display=swap');
+				body { font-family: 'Manrope', 'Segoe UI', sans-serif; }
+				h1, h2, h3 { font-family: 'Syne', sans-serif; font-weight: 700; }
+			`}</style>
+
 			{/* ===== Header ===== */}
 			<header
 				style={{
-					padding: '14px 24px', background: '#111827',
-					borderBottom: '1px solid #1f2937',
+					padding: '16px 24px', background: '#000000',
+					borderBottom: '1px solid #1a1a1a',
 					display: 'flex', alignItems: 'center',
 					justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+					backdropFilter: 'blur(8px)',
 				}}
 			>
 				<div>
-					<h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-						<span style={{ color: '#3b82f6' }}>Navi</span>Sound
+					<h1 style={{ margin: 0, fontSize: 26, fontWeight: 700, letterSpacing: '2px', color: '#3b82f6' }}>
+						NAVISOUND
 					</h1>
-					<p style={{ margin: 0, fontSize: 12, color: '#94a3b8' }}>
+					<p style={{ margin: '4px 0 0', fontSize: 12, color: '#9ca3af' }}>
 						Real-time spatial audio navigation for blind users
 					</p>
 				</div>
 				<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
 					<Btn
-						color={audioEnabled ? '#22c55e' : '#3b82f6'}
+						color={audioEnabled ? '#10b981' : '#3b82f6'}
 						onClick={handleEnableAudio}
 						aria-pressed={audioEnabled}
 					>
@@ -478,7 +661,7 @@ export const NavigationUI: React.FC = () => {
 						📷 {cameraActive ? 'Stop Camera' : 'Start Camera'}
 					</Btn>
 					<Btn
-						color={voiceActive ? '#22c55e' : '#6b7280'}
+						color={voiceActive ? '#10b981' : '#6b7280'}
 						onClick={toggleVoice}
 						aria-pressed={voiceActive}
 					>
@@ -492,7 +675,7 @@ export const NavigationUI: React.FC = () => {
 				{/* --- Camera panel --- */}
 				<div
 					style={{
-						flex: '1 1 50%', background: '#000',
+						flex: '1 1 50%', background: '#1a1a1a',
 						display: 'flex', alignItems: 'center', justifyContent: 'center',
 						position: 'relative', minHeight: 360,
 					}}
@@ -509,11 +692,25 @@ export const NavigationUI: React.FC = () => {
 					/>
 					<canvas ref={canvasRef} style={{ display: 'none' }} />
 
+					{/* Bounding-box detection overlay */}
+					{cameraActive && (
+						<canvas
+							ref={overlayCanvasRef}
+							style={{
+								position: 'absolute', top: 0, left: 0,
+								width: '100%', height: '100%',
+								pointerEvents: 'none',
+								zIndex: 2,
+							}}
+							aria-hidden="true"
+						/>
+					)}
+
 					{!cameraActive && (
-						<div style={{ textAlign: 'center', color: '#6b7280', padding: 40 }}>
-							<div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
-							<p style={{ margin: 0, fontSize: 16 }}>Camera off</p>
-							<p style={{ margin: '4px 0 0', fontSize: 13, color: '#4b5563' }}>
+				<div style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>
+					<div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
+					<p style={{ margin: 0, fontSize: 16, color: '#d1d5db' }}>Camera off</p>
+					<p style={{ margin: '4px 0 0', fontSize: 13, color: '#9ca3af' }}>
 								Click &ldquo;Start Camera&rdquo; to begin streaming
 							</p>
 						</div>
@@ -523,15 +720,16 @@ export const NavigationUI: React.FC = () => {
 						<div
 							style={{
 								position: 'absolute', top: 12, left: 12,
-								background: 'rgba(0,0,0,.7)', padding: '4px 10px',
-								borderRadius: 4, fontSize: 12, color: '#f87171',
+								background: 'rgba(0,0,0,.8)', padding: '6px 12px',
+								borderRadius: 6, fontSize: 12, color: '#3b82f6',
 								display: 'flex', alignItems: 'center', gap: 6,
+								fontWeight: 600,
 							}}
 						>
 							<span
 								style={{
 									width: 8, height: 8, borderRadius: '50%',
-									background: '#f87171', display: 'inline-block',
+									background: '#3b82f6', display: 'inline-block',
 									animation: 'pulse 1.5s infinite',
 								}}
 							/>
@@ -544,7 +742,7 @@ export const NavigationUI: React.FC = () => {
 				<div
 					style={{
 						flex: '1 1 50%', padding: '20px 24px', overflowY: 'auto',
-						background: '#111827', borderLeft: '1px solid #1f2937',
+					background: '#000000', borderLeft: '1px solid #1a1a1a',
 						display: 'flex', flexDirection: 'column', gap: 16,
 					}}
 					aria-live="polite"
@@ -555,21 +753,21 @@ export const NavigationUI: React.FC = () => {
 						<SectionTitle>Direction</SectionTitle>
 						<div
 							style={{
-								background: direction ? '#1e3a5f' : '#1f2937',
+								background: direction ? 'rgba(59, 130, 246, 0.05)' : '#0a0a0a',
 								borderRadius: 8, padding: '16px 20px',
 								display: 'flex', alignItems: 'center', gap: 16,
 								border: direction
 									? '1px solid #3b82f6'
-									: '1px solid #374151',
+									: '1px solid #1a1a1a',
 							}}
 						>
 							<span style={{ fontSize: 36 }}>{dirEmoji(direction)}</span>
 							<div>
-								<div style={{ fontSize: 22, fontWeight: 700 }}>
+								<div style={{ fontSize: 22, fontWeight: 700, color: '#e0e0e0', fontFamily: "'Syne', sans-serif" }}>
 									{direction || 'Waiting for camera…'}
 								</div>
 								{distanceFeet > 0 && (
-									<div style={{ fontSize: 15, color: '#93c5fd' }}>
+								<div style={{ fontSize: 15, color: '#60a5fa', fontWeight: 600 }}>
 										{distanceFeet} feet
 									</div>
 								)}
@@ -589,7 +787,7 @@ export const NavigationUI: React.FC = () => {
 					<section aria-label="Hazard warnings" aria-live="assertive">
 						<SectionTitle>Hazards</SectionTitle>
 						{hazards.length === 0 ? (
-							<div style={{ color: '#22c55e', fontSize: 14, padding: '6px 0' }}>
+							<div style={{ color: '#10b981', fontSize: 14, padding: '6px 0' }}>
 								✓ No hazards detected
 							</div>
 						) : (
@@ -607,16 +805,16 @@ export const NavigationUI: React.FC = () => {
 											padding: '10px 14px', borderRadius: 6,
 											fontSize: 14, fontWeight: 600,
 											background:
-												h.urgency === 'CRITICAL' ? '#7f1d1d'
-												: h.urgency === 'high' ? '#78350f'
-												: '#1f2937',
+												h.urgency === 'CRITICAL' ? 'rgba(239, 68, 68, 0.15)'
+												: h.urgency === 'high' ? 'rgba(59, 130, 246, 0.15)'
+												: '#0a0a0a',
 											border: `1px solid ${
 												h.urgency === 'CRITICAL' ? '#ef4444'
-												: h.urgency === 'high' ? '#f59e0b'
-												: '#374151'}`,
+												: h.urgency === 'high' ? '#3b82f6'
+												: '#1a1a1a'}`,
 											color:
 												h.urgency === 'CRITICAL' ? '#fca5a5'
-												: h.urgency === 'high' ? '#fde68a'
+												: h.urgency === 'high' ? '#3b82f6'
 												: '#d1d5db',
 										}}
 									>
@@ -677,7 +875,7 @@ export const NavigationUI: React.FC = () => {
 									}}
 								/>
 							</div>
-							<span style={{ fontSize: 16, fontWeight: 700, minWidth: 45, textAlign: 'right' }}>
+							<span style={{ fontSize: 16, fontWeight: 700, minWidth: 45, textAlign: 'right', color: '#e0e0e0' }}>
 								{confidence > 0 ? `${Math.round(confidence * 100)}%` : '—'}
 							</span>
 						</div>
@@ -688,10 +886,12 @@ export const NavigationUI: React.FC = () => {
 						<section
 							aria-label="Guidance summary"
 							style={{
-								background: '#1e293b', borderRadius: 8,
+									background: 'rgba(59, 130, 246, 0.05)', borderRadius: 8,
 								padding: '12px 16px',
 								borderLeft: '3px solid #3b82f6',
 								fontSize: 15, lineHeight: 1.5,
+								color: '#e0e0e0',
+								fontFamily: "'Manrope', sans-serif",
 							}}
 						>
 							💬 {summary}
@@ -700,61 +900,69 @@ export const NavigationUI: React.FC = () => {
 				</div>
 			</div>
 
-			{/* ===== Query bar ===== */}
-			<div
-				style={{
-					padding: '10px 24px', background: '#111827',
-					borderTop: '1px solid #1f2937',
-					display: 'flex', gap: 8, alignItems: 'center',
-				}}
-			>
-				<input
-					type="text"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={(e) => e.key === 'Enter' && sendTextQuery()}
-					placeholder="Ask: Where is the exit? or What is around me?"
-					aria-label="Navigation query"
+		{/* ===== Status bar ===== */}
+		<footer
+			style={{
+				padding: '24px 32px',
+				background: '#000000',
+				borderTop: '1px solid #1a1a1a',
+				display: 'flex',
+				justifyContent: 'space-between',
+				alignItems: 'center',
+				gap: 24,
+				fontFamily: "'Manrope', sans-serif",
+			}}
+		>
+			{/* Left: connection status */}
+			<div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+				<span
 					style={{
-						flex: 1, padding: '10px 14px', borderRadius: 6,
-						border: '1px solid #374151', background: '#1f2937',
-						color: '#f1f5f9', fontSize: 15, outline: 'none',
+						width: 14,
+						height: 14,
+						borderRadius: '50%',
+						background: connColor,
+						display: 'inline-block',
 					}}
 				/>
-				<Btn color="#3b82f6" onClick={sendTextQuery}>Ask</Btn>
+				<div>
+					<div style={{ fontSize: 18, fontWeight: 600, color: '#e0e0e0', textTransform: 'uppercase', letterSpacing: 1 }}>
+						{connStatus}
+					</div>
+					<div style={{ fontSize: 13, color: '#60a5fa', marginTop: 4 }}>
+						Latency: {latencyMs > 0 ? `${(latencyMs / 1000).toFixed(1)}s` : '—'}
+					</div>
+					<div style={{ fontSize: 13, color: '#60a5fa' }}>
+						Frames: {framesSent}
+					</div>
+				</div>
 			</div>
 
-			{/* ===== Status bar ===== */}
-			<div
-				style={{
-					padding: '8px 24px', background: '#0d1117',
-					borderTop: '1px solid #1f2937',
-					display: 'flex', justifyContent: 'space-between',
-					alignItems: 'center', flexWrap: 'wrap',
-					fontSize: 12, color: '#6b7280', gap: 8,
-				}}
-			>
-				<div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-					<span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-						<span
-							style={{
-								width: 8, height: 8, borderRadius: '50%',
-								background: connColor, display: 'inline-block',
-							}}
-						/>
-						{connStatus}
-					</span>
-					<span>Latency: {latencyMs > 0 ? `${(latencyMs / 1000).toFixed(1)}s` : '—'}</span>
-					<span>Frames: {framesSent}</span>
-				</div>
-				<div>
-					<Kbd>SPACE</Kbd> scene{' '}
-					<Kbd>Q</Kbd> query{' '}
-					<Kbd>H</Kbd> hazards{' '}
-					<Kbd>M</Kbd> audio{' '}
-					<Kbd>V</Kbd> voice
+			{/* Right: keyboard shortcuts */}
+			<div style={{ display: 'flex', flexDirection: 'column', gap: 8, textAlign: 'right' }}>
+				<div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<Kbd>SPACE</Kbd>
+						<span style={{ fontSize: 14, color: '#d1d5db' }}>Scene</span>
+					</div>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<Kbd>Q</Kbd>
+						<span style={{ fontSize: 14, color: '#d1d5db' }}>Query</span>
+					</div>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<Kbd>H</Kbd>
+						<span style={{ fontSize: 14, color: '#d1d5db' }}>Hazards</span>
+					</div>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<Kbd>M</Kbd>
+						<span style={{ fontSize: 14, color: '#d1d5db' }}>Audio</span>
+					</div>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<Kbd>V</Kbd>
+						<span style={{ fontSize: 14, color: '#d1d5db' }}>Voice</span>
+					</div>
 				</div>
 			</div>
+		</footer>
 
 			{/* CSS animation for the LIVE pulse */}
 			<style>{`
@@ -775,7 +983,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 	return (
 		<h2
 			style={{
-				fontSize: 13, color: '#94a3b8', margin: '0 0 8px',
+				fontSize: 13, color: '#60a5fa', margin: '0 0 8px',
 				textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600,
 			}}
 		>
@@ -806,7 +1014,7 @@ function Kbd({ children }: { children: React.ReactNode }) {
 		<kbd
 			style={{
 				display: 'inline-block', padding: '2px 6px', borderRadius: 3,
-				background: '#1f2937', border: '1px solid #374151',
+				background: '#1f2937', border: '1px solid #3b82f6',
 				fontSize: 11, fontFamily: 'monospace', marginRight: 2,
 			}}
 		>

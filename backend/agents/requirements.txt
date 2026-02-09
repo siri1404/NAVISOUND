@@ -1,11 +1,13 @@
-google-genai
+google-genai>=1.62.0
 fastapi
 uvicorn[standard]
 pydantic
 python-dotenv
 httpx
-redis
-sqlalchemy
+redis>=5.0.0
+sqlalchemy[asyncio]>=2.0
+asyncpg
+geoalchemy2>=0.14
 psycopg2-binary
 pytest
 pytest-asyncio

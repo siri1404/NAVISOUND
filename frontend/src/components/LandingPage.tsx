@@ -181,10 +181,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Manrope:wght@300;400;500;600&display=swap');
 
         :root {
-          --paper: #f4f1ed;
+          --paper: #0a0a0a;
           --accent: #2e4b5f;
-          --line: #d7d1c9;
-          --muted: #9a958e;
+          --line: #2a3142;
+          --muted: #9ca3af;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -227,9 +227,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
           border-radius: 12px;
           letter-spacing: 4px;
           text-transform: uppercase;
-          color: #ff6f3c; /* warm orange */
-          background: rgba(255, 255, 255, 0.55);
-          border: 1px solid rgba(255, 220, 200, 0.6);
+          color: #3b82f6; /* warm orange */
+          background: rgba(59, 130, 246, 0.15);
+          border: 1px solid rgba(59, 130, 246, 0.3);
           backdrop-filter: blur(8px);
           -webkit-backdrop-filter: blur(8px);
           z-index: 30;
@@ -251,15 +251,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
           position: relative;
           background:
             radial-gradient(circle at 28% 22%, rgba(255,255,255,0.45), transparent 35%),
-            radial-gradient(circle at 68% 28%, #ff8c42, transparent 50%),
-            radial-gradient(circle at 30% 68%, #e85d26, transparent 55%),
-            radial-gradient(circle at 75% 72%, #ffb347, transparent 50%),
-            radial-gradient(circle at 50% 50%, #ff6f3c 0%, #f4a261 35%, #ffcb77 65%, #ffe0a3 90%, transparent 100%);
+            radial-gradient(circle at 68% 28%, #60a5fa, transparent 50%),
+            radial-gradient(circle at 30% 68%, #2563eb, transparent 55%),
+            radial-gradient(circle at 75% 72%, #6b7ae9, transparent 50%),
+            radial-gradient(circle at 50% 50%, #3b82f6 0%, #f4a261 35%, #818cf8 65%, #a5b4fc 90%, transparent 100%);
           backdrop-filter: blur(24px) saturate(170%);
           -webkit-backdrop-filter: blur(24px) saturate(170%);
-          border: 1.5px solid rgba(255, 220, 180, 0.5);
+          border: 1.5px solid rgba(59, 130, 246, 0.3);
           box-shadow:
-            0 8px 36px rgba(230, 100, 50, 0.3),
+            0 8px 36px rgba(59, 130, 246, 0.2),
             inset 0 -10px 28px rgba(255, 255, 255, 0.25),
             inset 0 10px 28px rgba(255, 160, 80, 0.2);
           transition: transform 0.4s cubic-bezier(.22,1,.36,1), box-shadow 0.4s ease;
