@@ -8,24 +8,83 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
   const [entered, setEntered] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
-  const [hint, setHint] = useState('tap to begin');
+  const [hint, setHint] = useState('press Enter to begin, or say "start"');
   const recognitionRef = useRef<any>(null);
 
-  // Pre-load voices
+  // Pre-load voices and announce keyboard instructions on mount
   useEffect(() => {
     if ('speechSynthesis' in window) window.speechSynthesis.getVoices();
+
+    // Announce keyboard instruction to assistive technology users
+    const announcer = document.createElement('div');
+    announcer.setAttribute('role', 'status');
+    announcer.setAttribute('aria-live', 'polite');
+    announcer.setAttribute('aria-label', 'Instruction');
+    announcer.style.position = 'absolute';
+    announcer.style.left = '-10000px';
+    announcer.textContent = 'NaviSound. Press Enter to begin, or say start.';
+    document.body.appendChild(announcer);
+
+    // Try immediate auto-play (may work if user has interacted or accessibility context)
+    tryAutoPlay();
+
     return () => {
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       if (recognitionRef.current) {
         try { recognitionRef.current.abort(); } catch (_) {}
       }
+      document.body.removeChild(announcer);
     };
   }, []);
+
+  // Keyboard support for accessibility
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if ((e.key === 'Enter' || e.key === ' ') && !entered) {
+        e.preventDefault();
+        handleEnter();
+      }
+    };
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [entered]);
+
+  function tryAutoPlay() {
+    if (!('speechSynthesis' in window)) return;
+    const synth = window.speechSynthesis;
+    
+    // Attempt auto-play welcome
+    const u = new SpeechSynthesisUtterance(
+      'Welcome to NaviSound. Your spatial audio guide awaits. Say start, and we\'ll begin your journey.'
+    );
+    const voices = synth.getVoices();
+    const preferred =
+      voices.find((v) => v.lang.startsWith('en') && v.name.toLowerCase().includes('female')) ||
+      voices.find((v) => v.lang.startsWith('en')) ||
+      voices[0];
+    if (preferred) u.voice = preferred;
+    u.rate = 0.92;
+    u.pitch = 1.05;
+    u.volume = 1;
+
+    u.onstart = () => {
+      setEntered(true);
+      setSpeaking(true);
+      setHint('');
+    };
+    u.onend = () => {
+      setSpeaking(false);
+      setHint('Say "start" to begin.');
+      startListening();
+    };
+
+    try { synth.speak(u); } catch (_) {}
+  }
 
   const startListening = useCallback(() => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
-      setHint('say "start" or tap the globe');
+      setHint('Press Enter or say "start"');
       return;
     }
 
@@ -51,12 +110,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
     recognition.onerror = () => {
       setListening(false);
-      setHint('tap the globe to start');
+      setHint('Press Enter or try again');
     };
 
     recognition.onend = () => {
       setListening(false);
-      // restart if still on landing
       if (recognitionRef.current) {
         try { recognition.start(); } catch (_) {}
       }
@@ -69,7 +127,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
     if (entered) return;
     setEntered(true);
 
-    // Speak welcome — inside click handler so browser allows it
+    // Speak welcome via user gesture
     if ('speechSynthesis' in window) {
       const synth = window.speechSynthesis;
       synth.cancel();
@@ -92,12 +150,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
       };
       u.onend = () => {
         setSpeaking(false);
-        setHint('say "start"');
+        setHint('Say "start" to begin.');
         startListening();
       };
       synth.speak(u);
     } else {
-      setHint('say "start" or tap again');
+      setHint('Say "start" or press Enter again');
       startListening();
     }
   }
