@@ -1,6 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { LandingPage } from './components/LandingPage';
 import { NavigationUI } from './components/NavigationUI';
 
 export const App: React.FC = () => {
-	return <NavigationUI />;
+	const [started, setStarted] = useState(false);
+
+	if (started) {
+		return <NavigationUI />;
+	}
+
+	return <LandingPage onStart={() => setStarted(true)} />;
 };
