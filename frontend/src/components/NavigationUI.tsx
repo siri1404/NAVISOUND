@@ -52,6 +52,9 @@ export const NavigationUI: React.FC = () => {
 
 	const lastSpokeRef = useRef(0);
 	const lastSpokenTextRef = useRef('');
+	const lastAnnouncedPeopleRef = useRef<string[]>([]);
+	const lastAnnouncedHazardsRef = useRef<string[]>([]);
+	const pendingUpdatesRef = useRef<string[]>([]);
 
 	/* -------------------------------------------------------------- */
 	/*  Response handler (ref so WS callback always calls latest)      */
@@ -64,40 +67,33 @@ export const NavigationUI: React.FC = () => {
 
 		console.log('[NaviSound] Raw response:', JSON.stringify(data).slice(0, 800));
 
-		// Direction — top-level (new format) or nested in navigation (old format)
-		const nav = data.navigation || {};
-		const dir =
-			data.direction || nav.direction ||
-			data.next_direction || nav.next_direction || '';
-		const dist =
-			data.distance_feet || nav.distance_feet || 0;
+		// Direction — top-level
+		const dir = data.direction || '';
+		const dist = data.distance_feet || 0;
 
-		// Confidence — handle confidence_0to1 variant from Gemini
-		const conf = data.confidence || data.confidence_0to1 || 0;
+		// Confidence
+		const conf = data.confidence || 0;
 
-		// Hazards
-		const haz: Hazard[] = (data.hazards || []).map((h: any) => ({
+		// Hazards array (contains obstacles too)
+		const hazardsRaw: any[] = data.hazards || [];
+		const haz: Hazard[] = hazardsRaw.map((h: any) => ({
 			type: h.type || 'unknown',
 			urgency: h.urgency || 'medium',
 			direction: h.direction,
 			distance_feet: h.distance_feet,
 		}));
 
+		// Audio params
 		const audioParams = data.audio || {};
+		const voiceInstruction = audioParams.voice_instruction || '';
 
-		// Summary — check all possible source fields
-		const sum =
-			data.summary ||
-			data.long_description ||
-			audioParams.voice_instruction ||
-			data.hazard_action ||
-			nav.summary ||
-			data.voice_instruction ||
-			data.instruction || '';
+		// Summary
+		const sum = data.summary || data.hazard_action || '';
 
-		// Spatial features like "door frame", "wall edge"
+		// Spatial features
 		const feats: string[] = data.spatial_features || [];
 
+		// Update UI state
 		if (dir) setDirection(dir);
 		if (dist) setDistanceFeet(dist);
 		setHazards(haz);
@@ -105,20 +101,70 @@ export const NavigationUI: React.FC = () => {
 		if (sum) setSummary(sum);
 		if (feats.length > 0) setFeatures(feats);
 
-		/* ---- Audio feedback ---- */
+		/* ---- SMART AUDIO FEEDBACK ---- */
 		if (audioEnabledRef.current && audioRef.current) {
 			// Spatial beep for direction
 			if (dir) audioRef.current.playDirectionalCue(dir, dist);
 
-			// Throttle speech: only speak if >3s since last speech OR text changed
+			const speechParts: string[] = [];
 			const timeSinceLast = now - lastSpokeRef.current;
-			const textToSpeak = buildSpeechText(dir, dist, sum, feats, haz);
 
-			if (textToSpeak && (timeSinceLast > 3000 || textToSpeak !== lastSpokenTextRef.current)) {
-				console.log('[NaviSound] Speaking:', textToSpeak);
-				audioRef.current.speak(textToSpeak);
+			// === PEOPLE DETECTION (from hazards array) ===
+			const people = hazardsRaw.filter((h: any) => 
+				(h.type || '').toLowerCase().includes('person')
+			);
+			if (people.length > 0) {
+				const peopleKey = people.map((p: any) => `${p.direction}-${p.distance_feet}`).join(',');
+				if (!lastAnnouncedPeopleRef.current.includes(peopleKey)) {
+					const personDesc = people.map((p: any) => 
+						`${p.direction || 'nearby'}${p.distance_feet ? ', ' + p.distance_feet + ' feet' : ''}`
+					).join(' and ');
+					speechParts.push(`Person ${personDesc}`);
+					lastAnnouncedPeopleRef.current = [peopleKey];
+				}
+			} else {
+				lastAnnouncedPeopleRef.current = [];
+			}
+
+			// === CRITICAL HAZARDS ===
+			const criticalHazards = hazardsRaw.filter((h: any) => 
+				h.urgency === 'high' || h.urgency === 'WARNING' || h.urgency === 'CRITICAL'
+			);
+			if (criticalHazards.length > 0) {
+				const hazardKey = criticalHazards.map((h: any) => h.type).join(',');
+				if (!lastAnnouncedHazardsRef.current.includes(hazardKey)) {
+					const hazardDesc = criticalHazards.map((h: any) => 
+						(h.type || 'hazard').replace(/-/g, ' ')
+					).join(', ');
+					speechParts.push(`Warning: ${hazardDesc}`);
+					lastAnnouncedHazardsRef.current = [hazardKey];
+				}
+			}
+
+			// === NEW FEATURES (door, stairs) ===
+			const importantFeats = feats.filter(f => 
+				['door', 'stairs', 'step', 'curb', 'elevator'].some(k => f.toLowerCase().includes(k))
+			);
+			if (importantFeats.length > 0) {
+				pendingUpdatesRef.current.push(`Ahead: ${importantFeats.join(', ')}`);
+			}
+
+			// === SPEAK LOGIC ===
+			// Immediate for people and hazards
+			if (speechParts.length > 0) {
+				const text = speechParts.join('. ');
+				console.log('[NaviSound] 🔊 IMMEDIATE:', text);
+				audioRef.current.speak(text);
 				lastSpokeRef.current = now;
-				lastSpokenTextRef.current = textToSpeak;
+			}
+			// Batched updates every 15 seconds
+			else if (pendingUpdatesRef.current.length > 0 && timeSinceLast > 15000) {
+				// Use voice instruction from backend if available
+				const text = voiceInstruction || pendingUpdatesRef.current.slice(0, 2).join('. ');
+				console.log('[NaviSound] 📋 BATCHED:', text);
+				audioRef.current.speak(text);
+				pendingUpdatesRef.current = [];
+				lastSpokeRef.current = now;
 			}
 		}
 
@@ -129,7 +175,7 @@ export const NavigationUI: React.FC = () => {
 	};
 
 	/* -------------------------------------------------------------- */
-	/*  Build speech text from response data                           */
+	/*  Build speech text from response data (fallback)               */
 	/* -------------------------------------------------------------- */
 	function buildSpeechText(
 		dir: string, dist: number, sum: string,

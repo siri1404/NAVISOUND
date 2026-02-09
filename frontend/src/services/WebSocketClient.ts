@@ -17,7 +17,7 @@ export class WebSocketClient {
 	onStatusChange: ((status: ConnectionStatus) => void) | null = null;
 
 	constructor(url?: string) {
-		this.url = url || (window as any).GATEWAY_WS || 'ws://localhost:3000';
+		this.url = url || (window as any).GATEWAY_WS || 'ws://localhost:3001';
 	}
 
 	connect(): void {
