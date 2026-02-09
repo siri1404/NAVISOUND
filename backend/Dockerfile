@@ -16,14 +16,19 @@ RUN apt-get update && \
 COPY agents/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Application code
-COPY agents/ ./agents/
-COPY agents/gemini_client.py ./gemini_client.py
-COPY agents/orchestrator.py ./orchestrator.py
-COPY agents/models.py ./models.py
-COPY agents/redis_client.py ./redis_client.py
-COPY agents/context_manager.py ./context_manager.py
-COPY agents/spatial_memory.py ./spatial_memory.py
+# ── Top-level modules (imported directly by orchestrator) ─────────
+COPY agents/gemini_client.py .
+COPY agents/orchestrator.py .
+COPY agents/models.py .
+COPY agents/redis_client.py .
+COPY agents/context_manager.py .
+COPY agents/spatial_memory.py .
+
+# ── Agent sub-package  →  /app/agents/{scene_agent,…}.py ─────────
+#    (orchestrator does: from agents.scene_agent import SceneAgent)
+COPY agents/agents/ ./agents/
+
+# ── Database package  →  /app/database/ ──────────────────────────
 COPY database/ ./database/
 
 # GCP service account key (mounted at runtime via docker-compose)

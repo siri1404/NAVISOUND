@@ -3,10 +3,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY gateway/package.json ./
+# Install deps (context is backend/gateway/)
+COPY package.json ./
 RUN npm install --production
 
-COPY gateway/ ./
+# Application code
+COPY server.js ./
+COPY middleware/ ./middleware/
 
 ENV EXPRESS_PORT=3000
 ENV FASTAPI_WS_URL=ws://backend:8000/agent/stream

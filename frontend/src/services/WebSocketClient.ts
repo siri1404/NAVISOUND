@@ -17,7 +17,22 @@ export class WebSocketClient {
 	onStatusChange: ((status: ConnectionStatus) => void) | null = null;
 
 	constructor(url?: string) {
-		this.url = url || (window as any).GATEWAY_WS || 'ws://localhost:3001';
+		if (url) {
+			this.url = url;
+		} else if ((window as any).GATEWAY_WS) {
+			this.url = (window as any).GATEWAY_WS;
+		} else {
+			// Auto-detect: in production (nginx) use /ws proxy path;
+			// in dev (vite on :5173) go direct to gateway on :3000
+			const loc = window.location;
+			const isDev = loc.port === '5173';
+			if (isDev) {
+				this.url = `ws://${loc.hostname}:3000`;
+			} else {
+				const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+				this.url = `${proto}//${loc.host}/ws`;
+			}
+		}
 	}
 
 	connect(): void {

@@ -12,8 +12,8 @@ import json
 import logging
 from typing import Dict, List, Optional
 
-from agents.context_manager import ContextManager
-from agents.redis_client import cache_landmark, recall_landmarks
+from context_manager import ContextManager
+from redis_client import cache_landmark, recall_landmarks
 from gemini_client import GeminiLiveClient
 
 logger = logging.getLogger("navisound.spatial_memory")
