@@ -95,6 +95,9 @@ export class SpatialAudioEngine {
 			console.warn('[NaviSound] SpeechSynthesis not available');
 			return;
 		}
+		
+		console.log('[NaviSound] Attempting to speak:', text);
+		
 		// Cancel any queued/in-progress speech
 		speechSynthesis.cancel();
 
@@ -104,12 +107,34 @@ export class SpatialAudioEngine {
 			u.rate = rate;
 			u.volume = 1.0;
 			u.pitch = 1.0;
+			
 			// Pick a voice if available
 			const voices = speechSynthesis.getVoices();
-			const english = voices.find(v => v.lang.startsWith('en'));
-			if (english) u.voice = english;
-			u.onerror = (e) => console.warn('[NaviSound] Speech error:', e.error);
+			console.log('[NaviSound] Available voices:', voices.length);
+			
+			if (voices.length === 0) {
+				// Voices not loaded yet, trigger load and retry
+				console.log('[NaviSound] Waiting for voices to load...');
+				speechSynthesis.addEventListener('voiceschanged', () => {
+					const newVoices = speechSynthesis.getVoices();
+					console.log('[NaviSound] Voices loaded:', newVoices.length);
+					const english = newVoices.find(v => v.lang.startsWith('en'));
+					if (english) u.voice = english;
+				}, { once: true });
+			} else {
+				const english = voices.find(v => v.lang.startsWith('en'));
+				if (english) {
+					u.voice = english;
+					console.log('[NaviSound] Using voice:', english.name);
+				}
+			}
+			
+			u.onstart = () => console.log('[NaviSound] Speech started');
+			u.onend = () => console.log('[NaviSound] Speech ended');
+			u.onerror = (e) => console.error('[NaviSound] Speech error:', e.error, e);
+			
 			speechSynthesis.speak(u);
+			console.log('[NaviSound] Speech queued');
 		}, 50);
 	}
 }
